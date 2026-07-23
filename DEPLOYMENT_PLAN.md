@@ -127,43 +127,20 @@ npm run smoke
 
 ## Part B — Railway deployment (remote)
 
-> **Blocker:** the server currently speaks **stdio only**. Railway exposes an **HTTP** service. Complete **B0** before B1–B8.
+> **Blocker (resolved in code):** Streamable HTTP is implemented. When `PORT` is set (Railway), the server listens on `0.0.0.0:$PORT` with `GET /health` and `/mcp`. You still must set Google env vars on Railway.
 
-### Step B0 — Prerequisites (code changes before Railway)
+### Step B0 — Prerequisites (code) ✅
 
-Implement and merge these before connecting Railway:
+Already in this repo:
 
-1. **Streamable HTTP** MCP transport (in addition to or instead of stdio when `PORT` is set).
-2. Bind HTTP server to `process.env.PORT` (Railway injects this).
-3. Prefer **`GOOGLE_REFRESH_TOKEN`** from env (Railway disk is ephemeral; do not rely on `tokens.json` unless you add a volume).
-4. Add a simple **auth gate** for the HTTP endpoint (e.g. shared bearer token / `MCP_AUTH_TOKEN` header) so the Gmail tools are not public.
-5. Add a health route (e.g. `GET /health` → `200 ok`) for Railway healthchecks.
-6. (Recommended) Add a `Dockerfile`:
+1. **Streamable HTTP** when `PORT` or `MCP_TRANSPORT=http` is set.
+2. Bind to `process.env.PORT` (Railway injects this).
+3. Prefer **`GOOGLE_REFRESH_TOKEN`** from env on Railway.
+4. Optional **`MCP_AUTH_TOKEN`** (`Authorization: Bearer …`).
+5. **`GET /health`** for Railway healthchecks.
+6. `railway.toml` with healthcheck path `/health`.
 
-```dockerfile
-FROM node:20-alpine
-WORKDIR /app
-COPY package*.json ./
-RUN npm ci
-COPY . .
-RUN npm run build
-ENV NODE_ENV=production
-CMD ["node", "dist/server.js"]
-EXPOSE 3000
-```
-
-Local verification of HTTP mode (after B0):
-
-```bash
-$env:PORT="8080"
-$env:GOOGLE_REFRESH_TOKEN="..."   # from tokens / get-refresh-token
-npm run build
-npm start
-# curl http://localhost:8080/health
-```
-
-Only continue when HTTP mode works on your machine.
-
+Skip ahead to **B1** / set Railway Variables if the service is already connected to GitHub.
 ---
 
 ### Step B1 — Put the repo on GitHub

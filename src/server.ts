@@ -1,104 +1,103 @@
 #!/usr/bin/env node
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { ensureAuthReady } from "./auth/googleAuth.js";
+import { createMcpServer } from "./createServer.js";
+import { startHttpServer } from "./httpServer.js";
 import { logger } from "./lib/logger.js";
-import {
-  handleSendEmail,
-  sendEmailInputSchema,
-  sendEmailOutputSchema,
-} from "./tools/sendEmail.js";
-import {
-  handleDraftEmail,
-  draftEmailInputSchema,
-  draftEmailOutputSchema,
-} from "./tools/draftEmail.js";
-import {
-  handleAppendToGoogleDoc,
-  appendToGoogleDocInputSchema,
-  appendToGoogleDocOutputSchema,
-} from "./tools/appendToGoogleDoc.js";
 import { AppError } from "./types/errors.js";
 
-async function main(): Promise<void> {
+function useHttpTransport(): boolean {
+  const explicit = process.env.MCP_TRANSPORT?.trim().toLowerCase();
+  if (explicit === "http" || explicit === "streamable-http") return true;
+  if (explicit === "stdio") return false;
+  // Railway (and most PaaS) inject PORT — prefer HTTP automatically
+  return Boolean(process.env.PORT?.trim());
+}
+
+async function resolveAuth(): Promise<{ authReady: boolean; authError?: string }> {
   if (process.env.MCP_SKIP_AUTH === "1") {
     logger.warn("startup_auth_skipped", {
       reason: "MCP_SKIP_AUTH=1 (discovery/smoke only; tool calls will fail without credentials)",
     });
-  } else {
-    try {
-      await ensureAuthReady();
-    } catch (err) {
-      const message = err instanceof AppError ? err.message : String(err);
-      logger.error("startup_auth_failed", { message });
-      console.error(`Fatal: ${message}`);
-      process.exit(1);
-    }
+    return { authReady: false, authError: "MCP_SKIP_AUTH=1" };
   }
 
-  const server = new McpServer({
-    name: "mcp-gmail-docs-server",
-    version: "1.0.0",
-  });
+  try {
+    await ensureAuthReady();
+    return { authReady: true };
+  } catch (err) {
+    const message = err instanceof AppError ? err.message : String(err);
+    return { authReady: false, authError: message };
+  }
+}
 
-  server.registerTool(
-    "send_email",
-    {
-      title: "Send Email",
-      description:
-        "Send an email immediately via Gmail. Supports plain text or HTML body, CC/BCC, attachments, and optional thread reply.",
-      inputSchema: sendEmailInputSchema,
-      outputSchema: sendEmailOutputSchema,
-    },
-    // ToolResult matches CallToolResult; cast avoids excess-property / index-signature friction with Zod inference
-    async (args) => (await handleSendEmail(args)) as never,
-  );
+async function main(): Promise<void> {
+  const httpMode = useHttpTransport();
+  const { authReady, authError } = await resolveAuth();
 
-  server.registerTool(
-    "draft_email",
-    {
-      title: "Draft Email",
-      description:
-        "Create a Gmail draft without sending. Same input schema as send_email (including optional thread_id).",
-      inputSchema: draftEmailInputSchema,
-      outputSchema: draftEmailOutputSchema,
-    },
-    async (args) => (await handleDraftEmail(args)) as never,
-  );
-
-  server.registerTool(
-    "append_to_google_doc",
-    {
-      title: "Append to Google Doc",
-      description:
-        "Append plain text or basic markdown (headings, bold, bullets) to the end of an existing Google Doc.",
-      inputSchema: appendToGoogleDocInputSchema,
-      outputSchema: appendToGoogleDocOutputSchema,
-    },
-    async (args) => (await handleAppendToGoogleDoc(args)) as never,
-  );
-
-  const transport = new StdioServerTransport();
-  await server.connect(transport);
-  logger.info("mcp_server_started", {
-    tools: ["send_email", "draft_email", "append_to_google_doc"],
-    transport: "stdio",
-  });
-
-  const shutdown = async (signal: string) => {
-    logger.info("mcp_server_shutdown", { signal });
-    try {
-      await server.close();
-    } catch (err) {
-      logger.error("mcp_server_shutdown_error", {
-        error: err instanceof Error ? err.message : String(err),
-      });
+  if (!httpMode) {
+    // stdio: fail fast — Cursor cannot usefully start a broken auth process
+    if (!authReady) {
+      logger.error("startup_auth_failed", { message: authError });
+      console.error(`Fatal: ${authError}`);
+      console.error(
+        "Set GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, and GOOGLE_REFRESH_TOKEN (or tokens.json).",
+      );
+      process.exit(1);
     }
-    process.exit(0);
-  };
 
-  process.on("SIGINT", () => void shutdown("SIGINT"));
-  process.on("SIGTERM", () => void shutdown("SIGTERM"));
+    const server = createMcpServer();
+    const transport = new StdioServerTransport();
+    await server.connect(transport);
+    logger.info("mcp_server_started", {
+      tools: ["send_email", "draft_email", "append_to_google_doc"],
+      transport: "stdio",
+    });
+
+    const shutdown = async (signal: string) => {
+      logger.info("mcp_server_shutdown", { signal });
+      try {
+        await server.close();
+      } catch (err) {
+        logger.error("mcp_server_shutdown_error", {
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+      process.exit(0);
+    };
+    process.on("SIGINT", () => void shutdown("SIGINT"));
+    process.on("SIGTERM", () => void shutdown("SIGTERM"));
+    return;
+  }
+
+  // HTTP / Railway: keep process alive even if auth is missing so /health works
+  if (!authReady) {
+    logger.error("startup_auth_failed_http_degraded", {
+      message: authError,
+      hint: "Set Railway Variables: GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, GOOGLE_REFRESH_TOKEN (and optional MCP_AUTH_TOKEN), then redeploy.",
+    });
+    console.error(`Warning: Google auth not ready — ${authError}`);
+    console.error(
+      "Set Railway Variables: GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, GOOGLE_REFRESH_TOKEN — then redeploy.",
+    );
+  }
+
+  const port = Number(process.env.PORT || 8080);
+  await startHttpServer({
+    port,
+    host: "0.0.0.0",
+    authReady,
+    authError,
+  });
+
+  process.on("SIGINT", () => {
+    logger.info("mcp_server_shutdown", { signal: "SIGINT" });
+    process.exit(0);
+  });
+  process.on("SIGTERM", () => {
+    logger.info("mcp_server_shutdown", { signal: "SIGTERM" });
+    process.exit(0);
+  });
 }
 
 main().catch((err) => {
