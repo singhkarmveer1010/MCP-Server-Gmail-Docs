@@ -1,0 +1,41 @@
+{
+  "name": "mcp-gmail-docs-server",
+  "version": "1.0.0",
+  "description": "Generic MCP server for Gmail (send/draft) and Google Docs (append)",
+  "type": "module",
+  "main": "dist/server.js",
+  "bin": {
+    "mcp-gmail-docs-server": "dist/server.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/server.js",
+    "dev": "tsx src/server.ts",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "get-refresh-token": "tsx scripts/getRefreshToken.ts",
+    "smoke": "tsx scripts/smokeClient.ts"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "keywords": [
+    "mcp",
+    "gmail",
+    "google-docs",
+    "model-context-protocol"
+  ],
+  "license": "MIT",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "dotenv": "^17.4.2",
+    "googleapis": "^173.0.0",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@types/node": "^26.1.1",
+    "tsx": "^4.23.1",
+    "typescript": "^7.0.2",
+    "vitest": "^4.1.10"
+  }
+}
